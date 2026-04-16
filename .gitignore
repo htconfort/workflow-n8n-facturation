@@ -1,0 +1,30 @@
+# Secrets / env
+*.env
+!*.env.example
+.env
+.env.local
+.env.*.local
+
+# Script local env
+scripts/facture-colissimo.env
+
+# PDF generes
+/tmp/colissimo_*.pdf
+*.pdf
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Editeurs
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Logs
+*.log
