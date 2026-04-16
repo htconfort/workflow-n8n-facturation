@@ -37,6 +37,7 @@ Regles colis (par defaut) :
 """
 
 import argparse
+import base64
 import json
 import os
 import sys
@@ -125,7 +126,11 @@ def load_env():
             if "=" in line:
                 k, v = line.split("=", 1)
                 env[k.strip()] = v.strip()
-    required = ["SUPABASE_URL", "SUPABASE_SERVICE_KEY", "N8N_BASE_URL", "EXPRESS_CATALAN_API_URL", "EXPRESS_CATALAN_API_KEY"]
+    required = [
+        "SUPABASE_URL", "SUPABASE_SERVICE_KEY", "N8N_BASE_URL",
+        "EXPRESS_CATALAN_API_URL", "EXPRESS_CATALAN_USERNAME",
+        "EXPRESS_CATALAN_PASSWORD", "EXPRESS_CATALAN_STATION",
+    ]
     missing = [k for k in required if not env.get(k) or "REMPLACER" in env.get(k, "")]
     if missing:
         print(f"ERREUR : cles manquantes dans {ENV_FILE} : {', '.join(missing)}")
@@ -188,6 +193,37 @@ def supabase_update(env, table, filters, updates):
             return json.loads(resp.read() or b"[]")
     except Exception as e:
         print(f"  ERREUR Supabase UPDATE: {e}")
+        return None
+
+
+def get_express_catalan_token(env):
+    """
+    Auth Express Catalan :
+    POST /v1/token/{STATION} avec Authorization: Basic base64(USERNAME:PASSWORD)
+    body vide. Reponse : {"token": "JWT..."} valide 23h.
+    """
+    station = env["EXPRESS_CATALAN_STATION"]
+    url = f"{env['EXPRESS_CATALAN_API_URL']}/v1/token/{station}"
+    creds = f"{env['EXPRESS_CATALAN_USERNAME']}:{env['EXPRESS_CATALAN_PASSWORD']}"
+    auth_b64 = base64.b64encode(creds.encode()).decode()
+    headers = {
+        "Authorization": f"Basic {auth_b64}",
+        "Content-Type": "application/json",
+    }
+    req = urllib.request.Request(url, data=b"", headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read())
+            token = data.get("token")
+            if not token:
+                print(f"  ERREUR: pas de token dans la reponse: {data}")
+                return None
+            return token
+    except urllib.error.HTTPError as e:
+        print(f"  ERREUR auth Express Catalan ({e.code}): {e.read()[:300]}")
+        return None
+    except Exception as e:
+        print(f"  ERREUR auth Express Catalan: {e}")
         return None
 
 
@@ -357,13 +393,17 @@ def create_express_catalan_order(env, facture):
     if facture.get("delivery_date"):
         payload["delivery_date"] = facture["delivery_date"]
 
-    # Appel direct API Express Catalan via le MCP transport
-    # Le MCP est un proxy HTTP — on l'appelle directement
+    # 1. Recuperer un token JWT (Basic Auth sur /v1/token/{STATION})
+    token = get_express_catalan_token(env)
+    if not token:
+        print("  ERREUR: impossible d'obtenir le token Express Catalan")
+        return {"success": False, "order_uuid": None, "nb_colis": nb_colis}
+
+    # 2. Creer la commande (Bearer JWT, station deja dans le token)
     url = f"{env['EXPRESS_CATALAN_API_URL']}/v1/order"
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {env['EXPRESS_CATALAN_API_KEY']}",
-        "X-Station": "sc-106",
+        "Authorization": f"Bearer {token}",
     }
 
     result = http_post(url, payload, headers)
